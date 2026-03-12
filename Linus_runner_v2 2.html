@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Linus Runner</title>
+
+<style>
+body{
+margin:0;
+background:black;
+overflow:hidden;
+touch-action:none;
+}
+
+canvas{
+display:block;
+}
+</style>
+
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<script>
+
+const canvas = document.getElementById("game")
+const ctx = canvas.getContext("2d")
+
+canvas.width = window.innerWidth
+canvas.height = window.innerHeight
+
+let groundY = canvas.height*0.7
+let playerX = canvas.width/2
+let playerY = groundY
+let velocityY = 0
+let gravity = 0.7
+let onGround = true
+
+let speed = 0
+let distance = 0
+let highscore = localStorage.getItem("linusHighscore") || 0
+
+let obstacles = []
+
+let tilt = 0
+let gameState = "start"
+
+let step = 0
+
+function requestPermissions(){
+
+if(DeviceOrientationEvent.requestPermission){
+DeviceOrientationEvent.requestPermission()
+}
+
+if(DeviceMotionEvent.requestPermission){
+DeviceMotionEvent.requestPermission()
+}
+
+}
+
+canvas.addEventListener("touchstart",()=>{
+
+if(gameState==="start"){
+requestPermissions()
+startGame()
+return
+}
+
+if(gameState==="gameover"){
+startGame()
+return
+}
+
+jump()
+
+})
+
+window.addEventListener("deviceorientation", e=>{
+tilt = e.gamma
+})
+
+let lastAccel=0
+
+window.addEventListener("devicemotion",e=>{
+
+let a = e.accelerationIncludingGravity.y
+
+if(Math.abs(a-lastAccel)>15){
+jump()
+}
+
+lastAccel=a
+
+})
+
+function startGame(){
+
+gameState="playing"
+
+distance=0
+speed=0
+obstacles=[]
+playerY=groundY
+velocityY=0
+
+}
+
+function jump(){
+
+if(onGround && gameState==="playing"){
+
+velocityY = -12 - speed*0.6
+onGround=false
+
+}
+
+}
+
+function spawnObstacle(){
+
+let type=Math.random()<0.5?"hole":"block"
+
+obstacles.push({
+
+x:canvas.width+200,
+type:type,
+width:80,
+height:60
+
+})
+
+}
+
+setInterval(()=>{
+
+if(gameState==="playing" && Math.random()<0.7){
+spawnObstacle()
+}
+
+},1400)
+
+function update(){
+
+if(gameState!=="playing") return
+
+if(tilt>10) speed=7
+else if(tilt>3) speed=3
+else speed=0
+
+distance+=speed
+
+velocityY+=gravity
+playerY+=velocityY
+
+if(playerY>=groundY){
+playerY=groundY
+velocityY=0
+onGround=true
+}
+
+step+=speed*0.2
+
+for(let o of obstacles){
+
+o.x-=speed
+
+if(o.type==="hole"){
+
+if(playerX>o.x && playerX<o.x+o.width && onGround){
+gameOver()
+}
+
+}
+
+if(o.type==="block"){
+
+if(playerX>o.x && playerX<o.x+o.width && playerY>=groundY-o.height){
+gameOver()
+}
+
+}
+
+}
+
+}
+
+function gameOver(){
+
+gameState="gameover"
+
+if(distance>highscore){
+highscore=Math.floor(distance)
+localStorage.setItem("linusHighscore",highscore)
+}
+
+}
+
+function drawGround(){
+
+ctx.beginPath()
+ctx.moveTo(0,groundY)
+ctx.lineTo(canvas.width,groundY)
+ctx.strokeStyle="white"
+ctx.lineWidth=3
+ctx.stroke()
+
+}
+
+function drawPlayer(){
+
+ctx.strokeStyle="white"
+ctx.lineWidth=3
+
+let y=playerY
+
+ctx.beginPath()
+ctx.arc(playerX,y-40,10,0,Math.PI*2)
+ctx.stroke()
+
+ctx.beginPath()
+ctx.moveTo(playerX,y-30)
+ctx.lineTo(playerX,y)
+ctx.stroke()
+
+let legSwing=Math.sin(step)*15
+
+ctx.beginPath()
+ctx.moveTo(playerX,y)
+ctx.lineTo(playerX-10+legSwing,y+20)
+ctx.stroke()
+
+ctx.beginPath()
+ctx.moveTo(playerX,y)
+ctx.lineTo(playerX+10-legSwing,y+20)
+ctx.stroke()
+
+ctx.beginPath()
+ctx.moveTo(playerX,y-20)
+ctx.lineTo(playerX-15-legSwing,y-5)
+ctx.stroke()
+
+ctx.beginPath()
+ctx.moveTo(playerX,y-20)
+ctx.lineTo(playerX+15+legSwing,y-5)
+ctx.stroke()
+
+}
+
+function drawObstacles(){
+
+for(let o of obstacles){
+
+if(o.type==="hole"){
+
+ctx.clearRect(o.x,groundY-2,o.width,10)
+
+}
+
+if(o.type==="block"){
+
+ctx.strokeStyle="white"
+ctx.strokeRect(o.x,groundY-o.height,o.width,o.height)
+
+}
+
+}
+
+}
+
+function drawUI(){
+
+ctx.fillStyle="white"
+ctx.font="20px monospace"
+
+if(gameState==="playing"){
+ctx.fillText("Distance: "+Math.floor(distance),20,40)
+}
+
+if(gameState==="start"){
+
+ctx.font="40px monospace"
+ctx.fillText("LINUS RUNNER",canvas.width/2-150,canvas.height/2-40)
+
+ctx.font="20px monospace"
+ctx.fillText("Luta telefonen för att gå",canvas.width/2-140,canvas.height/2+10)
+ctx.fillText("Tryck för att hoppa",canvas.width/2-90,canvas.height/2+40)
+ctx.fillText("Tryck för att starta",canvas.width/2-100,canvas.height/2+90)
+
+}
+
+if(gameState==="gameover"){
+
+ctx.font="40px monospace"
+ctx.fillText("GAME OVER",canvas.width/2-130,canvas.height/2-20)
+
+ctx.font="20px monospace"
+ctx.fillText("Score: "+Math.floor(distance),canvas.width/2-60,canvas.height/2+30)
+
+ctx.fillText("Highscore: "+highscore,canvas.width/2-80,canvas.height/2+60)
+
+ctx.fillText("Tryck för att spela igen",canvas.width/2-110,canvas.height/2+110)
+
+}
+
+}
+
+function loop(){
+
+ctx.fillStyle="black"
+ctx.fillRect(0,0,canvas.width,canvas.height)
+
+update()
+
+drawGround()
+drawObstacles()
+drawPlayer()
+drawUI()
+
+requestAnimationFrame(loop)
+
+}
+
+loop()
+
+</script>
+
+</body>
+</html>
