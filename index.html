@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linus på Linjen v2</title>
+    <style>
+        body { background-color: black; color: white; font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 0; }
+        canvas { display: block; margin: 0 auto; background-color: black; }
+        #controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin: 20px auto;
+            max-width: 800px;
+        }
+        button {
+            font-size: 28px;
+            padding: 18px 32px;
+            background-color: #333;
+            color: white;
+            border: 3px solid white;
+            border-radius: 12px;
+            touch-action: manipulation;
+        }
+        button:active { background-color: #555; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+   
+    <!-- NYA KNAPPNAR -->
+    <div id="controls">
+        <button id="walkBtn">GÅ</button>
+        <button id="runBtn">SPRING</button>
+        <button id="jumpBtn">HOPPA</button>
+    </div>
+
+    <button id="startButton" style="font-size: 20px; padding: 10px 20px; margin: 10px;">Starta Spelet och Tillåt Sensorer</button>
+
+    <script>
+        (function() {
+            "use strict";
+
+            // Konstantar – FIXAD MARKPOSITION
+            const CANVAS_WIDTH = 800;
+            const CANVAS_HEIGHT = 400;
+            const COLORS = {
+                BACKGROUND: 'black',
+                FLOOR: 'white',
+                PLAYER: 'white',
+                OBSTACLES: 'white'
+            };
+            const FPS = 60;
+            const FLOOR_Y = CANVAS_HEIGHT - 30;        // Marken flyttad längre ner
+            const PLAYER_X = CANVAS_WIDTH / 4;
+            const PLAYER_SIZE = 60;                    // Höjd på gubben
+            const GRAVITY = 0.8;
+            const BASE_JUMP_VELOCITY = 15;
+            const MIN_OBSTACLE_DISTANCE = 300;
+            const OBSTACLE_WIDTH = 40;
+            const BUMP_HEIGHT = 30;
+            const LINE_WIDTH = 2;
+
+            // Globala variabler
+            let player;
+            let obstacles = [];
+            let spawnObstacleID;
+            let updateID;
+            let animationID;
+            let speed = 0;
+            let distance = 0;
+            let gameOver = false;
+            let lastObstacleX = CANVAS_WIDTH;
+            let shakeThreshold = 30;
+            let lastAcceleration = { x: 0, y: 0, z: 0 };
+            let tiltThresholdWalk = 10;
+            let tiltThresholdRun = 25;
+            let legAngle = 0;
+            let legDirection = 1;
+
+            class Player {
+                constructor(x, y, size) {
+                    this.x = x;
+                    this.y = y;
+                    this.size = size;
+                    this.velocityY = 0;
+                    this.isGrounded = true;
+                }
+
+                update() {
+                    this.velocityY += GRAVITY;
+                    this.y += this.velocityY;
+                    if (this.y >= FLOOR_Y - this.size) {
+                        this.y = FLOOR_Y - this.size;   // Gubben står exakt med fötterna på marken
+                        this.velocityY = 0;
+                        this.isGrounded = true;
+                    }
+                }
+
+                jump(jumpHeight) {
+                    if (this.isGrounded) {
+                        this.velocityY = -jumpHeight;
+                        this.isGrounded = false;
+                    }
+                }
+
+                draw(ctx) {
+                    ctx.strokeStyle = COLORS.PLAYER;
+                    ctx.lineWidth = LINE_WIDTH;
+                    ctx.beginPath();
+
+                    // Huvud
+                    ctx.arc(this.x, this.y + 12, 10, 0, 2 * Math.PI);
+
+                    // Kropp (kortare så midjan inte ligger på marken)
+                    ctx.moveTo(this.x, this.y + 22);
+                    ctx.lineTo(this.x, this.y + 38);
+
+                    // Armar
+                    ctx.moveTo(this.x, this.y + 27);
+                    ctx.lineTo(this.x - 12, this.y + 37);
+                    ctx.moveTo(this.x, this.y + 27);
+                    ctx.lineTo(this.x + 12, this.y + 37);
+
+                    // Ben – NU SLUTAR EXAKT VID MARKEN (y + 60)
+                    const legOffset = speed > 0 ? Math.sin(legAngle) * 12 : 0;
+                    ctx.moveTo(this.x, this.y + 38);
+                    ctx.lineTo(this.x - 6 + legOffset, this.y + 60);
+                    ctx.moveTo(this.x, this.y + 38);
+                    ctx.lineTo(this.x + 6 - legOffset, this.y + 60);
+
+                    ctx.stroke();
+                }
+            }
+
+            class Obstacle {
+                constructor(x, type) {
+                    this.x = x;
+                    this.width = OBSTACLE_WIDTH;
+                    this.type = type;
+                    this.height = this.type === 'bump' ? BUMP_HEIGHT : 0;
+                }
+
+                update() {
+                    this.x -= speed;
+                }
+
+                draw(ctx) {
+                    if (this.type === 'bump') {
+                        ctx.strokeStyle = COLORS.OBSTACLES;
+                        ctx.lineWidth = LINE_WIDTH;
+                        ctx.beginPath();
+                        ctx.moveTo(this.x, FLOOR_Y);
+                        ctx.lineTo(this.x, FLOOR_Y - this.height);
+                        ctx.lineTo(this.x + this.width, FLOOR_Y - this.height);
+                        ctx.lineTo(this.x + this.width, FLOOR_Y);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            function spawnObstacle() {
+                const type = Math.random() < 0.5 ? 'hole' : 'bump';
+                const newX = lastObstacleX + MIN_OBSTACLE_DISTANCE + Math.random() * 200;
+                obstacles.push(new Obstacle(newX, type));
+                lastObstacleX = newX;
+                spawnObstacleID = setTimeout(spawnObstacle, 1800 + Math.random() * 2500);
+            }
+
+            function update() {
+                updateID = setTimeout(update, 1000 / FPS);
+                if (gameOver) return;
+
+                player.update();
+
+                // Benanimation
+                if (speed > 0) {
+                    legAngle += 0.25 * legDirection;
+                    if (Math.abs(legAngle) > Math.PI / 2) legDirection *= -1;
+                } else {
+                    legAngle = 0;
+                }
+
+                obstacles.forEach(ob => ob.update());
+                obstacles = obstacles.filter(ob => ob.x + ob.width > 0);
+
+                // Kollisioner
+                obstacles.forEach(ob => {
+                    const playerRect = { x: player.x - 8, y: player.y, w: 22, h: player.size };
+                    if (ob.type === 'bump') {
+                        if (playerRect.x < ob.x + ob.width &&
+                            playerRect.x + playerRect.w > ob.x &&
+                            playerRect.y + playerRect.h > FLOOR_Y - ob.height &&
+                            playerRect.y < FLOOR_Y) {
+                            endGame();
+                        }
+                    } else if (ob.type === 'hole' && player.isGrounded) {
+                        if (player.x + 8 > ob.x && player.x - 8 < ob.x + ob.width) {
+                            endGame();
+                        }
+                    }
+                });
+
+                distance += speed / FPS;
+            }
+
+            function draw(ctx) {
+                animationID = requestAnimationFrame(() => draw(ctx));
+
+                ctx.fillStyle = COLORS.BACKGROUND;
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // Mark (med hål)
+                ctx.strokeStyle = COLORS.FLOOR;
+                ctx.lineWidth = LINE_WIDTH;
+                let x = 0;
+                while (x < CANVAS_WIDTH) {
+                    let end = CANVAS_WIDTH;
+                    let isHole = false;
+                    obstacles.forEach(ob => {
+                        if (ob.type === 'hole' && x < ob.x + ob.width && x > ob.x - 50) isHole = true;
+                        if (ob.x > x && ob.x < end) end = ob.x;
+                    });
+                    if (!isHole) {
+                        ctx.beginPath();
+                        ctx.moveTo(x, FLOOR_Y);
+                        ctx.lineTo(Math.min(x + 80, end), FLOOR_Y);
+                        ctx.stroke();
+                    }
+                    x = end;
+                }
+
+                obstacles.forEach(ob => ob.draw(ctx));
+                player.draw(ctx);
+
+                ctx.fillStyle = 'white';
+                ctx.font = '22px Arial';
+                ctx.fillText(`Distans: ${Math.floor(distance)} m`, 20, 35);
+
+                if (gameOver) {
+                    ctx.fillStyle = 'red';
+                    ctx.font = '32px Arial';
+                    ctx.fillText(`SPELET SLUT!`, CANVAS_WIDTH/2 - 120, CANVAS_HEIGHT/2 - 20);
+                    ctx.fillStyle = 'white';
+                    ctx.font = '24px Arial';
+                    ctx.fillText(`Distans: ${Math.floor(distance)} m`, CANVAS_WIDTH/2 - 110, CANVAS_HEIGHT/2 + 20);
+                    ctx.fillText(`Tryck SPACE för att starta om`, CANVAS_WIDTH/2 - 170, CANVAS_HEIGHT/2 + 60);
+                }
+            }
+
+            function endGame() {
+                gameOver = true;
+                clearTimeout(updateID);
+                clearTimeout(spawnObstacleID);
+            }
+
+            function reset() {
+                gameOver = false;
+                distance = 0;
+                obstacles = [];
+                lastObstacleX = CANVAS_WIDTH;
+                speed = 0;
+                player.y = FLOOR_Y - PLAYER_SIZE;
+                player.velocityY = 0;
+                player.isGrounded = true;
+                clearTimeout(spawnObstacleID);
+                update();
+                spawnObstacle();
+            }
+
+            // === TILT & SKAK (sensorer) – fortfarande kvar ===
+            function handleOrientation(event) {
+                let gamma = event.gamma || 0;
+                if (Math.abs(gamma) < tiltThresholdWalk) speed = 0;
+                else if (Math.abs(gamma) < tiltThresholdRun) speed = 5;
+                else speed = 10;
+                speed = Math.max(0, speed);
+            }
+
+            function handleMotion(event) {
+                const acc = event.accelerationIncludingGravity || {x:0,y:0,z:0};
+                const delta = Math.abs(acc.x - lastAcceleration.x) + Math.abs(acc.y - lastAcceleration.y) + Math.abs(acc.z - lastAcceleration.z);
+                if (delta > shakeThreshold && player.isGrounded) {
+                    let h = speed === 0 ? 12 : speed === 5 ? 17 : 23;
+                    player.jump(h);
+                }
+                lastAcceleration = {x:acc.x, y:acc.y, z:acc.z};
+            }
+
+            // === NYA KNAPPNAR (touch + mus) ===
+            function setupButtons() {
+                const walkBtn = document.getElementById('walkBtn');
+                const runBtn = document.getElementById('runBtn');
+                const jumpBtn = document.getElementById('jumpBtn');
+
+                // GÅ
+                walkBtn.addEventListener('touchstart', e => { e.preventDefault(); speed = 5; });
+                walkBtn.addEventListener('mousedown', () => speed = 5);
+                walkBtn.addEventListener('touchend', e => { e.preventDefault(); if (speed === 5) speed = 0; });
+                walkBtn.addEventListener('mouseup', () => { if (speed === 5) speed = 0; });
+
+                // SPRING
+                runBtn.addEventListener('touchstart', e => { e.preventDefault(); speed = 10; });
+                runBtn.addEventListener('mousedown', () => speed = 10);
+                runBtn.addEventListener('touchend', e => { e.preventDefault(); speed = 0; });
+                runBtn.addEventListener('mouseup', () => speed = 0);
+
+                // HOPPA
+                jumpBtn.addEventListener('touchstart', e => {
+                    e.preventDefault();
+                    if (player.isGrounded) {
+                        let h = speed === 0 ? 13 : speed === 5 ? 18 : 24;
+                        player.jump(h);
+                    }
+                });
+                jumpBtn.addEventListener('mousedown', () => {
+                    if (player.isGrounded) {
+                        let h = speed === 0 ? 13 : speed === 5 ? 18 : 24;
+                        player.jump(h);
+                    }
+                });
+            }
+
+            // Tillstånd för sensorer (samma som tidigare)
+            async function requestPermissions() {
+                let granted = true;
+                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    granted = await DeviceOrientationEvent.requestPermission() === 'granted';
+                }
+                if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                    granted = granted && await DeviceMotionEvent.requestPermission() === 'granted';
+                }
+                if (granted) {
+                    window.addEventListener('deviceorientation', handleOrientation);
+                    window.addEventListener('devicemotion', handleMotion);
+                    document.getElementById('startButton').style.display = 'none';
+                    reset();
+                } else {
+                    alert('Sensor-tillstånd nekades. Du kan ändå använda knapparna!');
+                    reset();
+                }
+            }
+
+            function init() {
+                const canvas = document.getElementById('gameCanvas');
+                const ctx = canvas.getContext('2d');
+
+                player = new Player(PLAYER_X, FLOOR_Y - PLAYER_SIZE, PLAYER_SIZE);
+
+                setupButtons();                     // NYA KNAPPNAR
+                document.getElementById('startButton').addEventListener('click', requestPermissions);
+
+                document.addEventListener('keydown', e => {
+                    if (gameOver && e.code === 'Space') reset();
+                });
+
+                draw(ctx);
+            }
+
+            window.onload = init;
+        })();
+    </script>
+</body>
+</html>
